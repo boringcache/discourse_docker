@@ -29,12 +29,12 @@ FROM base AS with_browsers
 ENV TESTEM_DEFAULT_BROWSER=Chrome
 # From https://dl.google.com/linux/linux_signing_key.pub
 # fingerprint: EB4C 1BFD 4F04 2F6D DDCC EC91 7721 F63B D38B 4796
-ADD google-linux-signing-key.pub /usr/share/keyrings/google-chrome.asc
-ADD install-chrome /tmp/install-chrome
+COPY google-linux-signing-key.pub /usr/share/keyrings/google-chrome.asc
+COPY install-chrome /tmp/install-chrome
 # From https://archive.mozilla.org/pub/firefox/releases/<any version>/KEY
 # fingerprint: 14F2 6682 D091 6CDD 81E3 7B6D 61B7 B526 D98F 0353
-ADD mozilla-release-key.asc /tmp/mozilla-release-key.asc
-ADD install-firefox /tmp/install-firefox
+COPY mozilla-release-key.asc /tmp/mozilla-release-key.asc
+COPY install-firefox /tmp/install-firefox
 RUN /tmp/install-chrome &&\
     apt update &&\
     apt install -y libxss1 firefox-esr &&\
@@ -43,8 +43,11 @@ RUN /tmp/install-chrome &&\
 
 FROM with_browsers AS release
 
-RUN cd /var/www/discourse &&\
-    sudo -u discourse bundle install --jobs $(nproc --ignore=1) &&\
+RUN --mount=type=cache,id=discourse-test-bundler,target=/home/discourse/.bundle/cache,sharing=locked,uid=1000,gid=1000 \
+    cd /var/www/discourse &&\
+    sudo -u discourse bundle config --local deployment true &&\
+    sudo -u discourse bundle config --local path ./vendor/bundle &&\
+    sudo -u discourse env BUNDLE_GLOBAL_GEM_CACHE=true BUNDLE_USER_CACHE=/home/discourse/.bundle/cache bundle install --jobs $(nproc --ignore=1) &&\
     sudo -E -u discourse -H /bin/bash -c 'CI=1 pnpm install'
 
 RUN cd /var/www/discourse && sudo -E -u discourse -H bundle exec rake plugin:install_all_official &&\
