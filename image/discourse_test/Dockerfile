@@ -56,6 +56,7 @@ RUN --mount=type=cache,id=discourse-bundle-test-main,target=/home/discourse/.cac
     install -dm 0755 -o discourse -g discourse /var/www/discourse/vendor/bundle &&\
     cp -a /home/discourse/.cache/bundle/. /var/www/discourse/vendor/bundle/ &&\
     sudo -u discourse bundle config --local path ./vendor/bundle &&\
+    sudo -u discourse bundle install --jobs $(nproc --ignore=1) &&\
     sudo -u discourse bundle check
 
 RUN install -dm 0755 -o discourse -g discourse /home/discourse/.local/share/pnpm

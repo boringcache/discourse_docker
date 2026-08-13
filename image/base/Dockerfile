@@ -266,6 +266,7 @@ RUN --mount=type=cache,id=discourse-bundle-${DISCOURSE_BRANCH},target=/home/disc
     install -dm 0755 -o discourse -g discourse /var/www/discourse/vendor/bundle &&\
     cp -a /home/discourse/.cache/bundle/. /var/www/discourse/vendor/bundle/ &&\
     sudo -u discourse bundle config --local path ./vendor/bundle &&\
+    sudo -u discourse bundle install --jobs $(nproc --ignore=1) &&\
     sudo -u discourse bundle check &&\
     find /var/www/discourse/vendor/bundle -name cache -not -path '*/gems/*' -type d -exec rm -rf {} + &&\
     find /var/www/discourse/vendor/bundle -name tmp -type d -exec rm -rf {} +
