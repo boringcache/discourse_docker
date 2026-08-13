@@ -1,0 +1,248 @@
+name: Run one Discourse cache comparison phase
+description: Build Discourse's upstream image-factory graph with one isolated cache lane.
+inputs:
+  strategy: {required: true}
+  phase: {required: true}
+  source-sha: {required: true}
+  source-datestamp: {required: true}
+  architecture: {required: true}
+runs:
+  using: composite
+  steps:
+    - name: Verify immutable benchmark inputs
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        SOURCE_DATESTAMP: ${{ inputs.source-datestamp }}
+      run: |
+        set -euo pipefail
+        [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "source-sha must be a full commit SHA" >&2; exit 1; }
+        [[ "$SOURCE_DATESTAMP" =~ ^[0-9]{8}$ ]] || { echo "source-datestamp must use YYYYMMDD" >&2; exit 1; }
+
+    - name: Select isolated cache scopes
+      id: scope
+      shell: bash
+      env:
+        STRATEGY: ${{ inputs.strategy }}
+        ARCHITECTURE: ${{ inputs.architecture }}
+      run: |
+        set -euo pipefail
+        # Seed and rebuild share a workflow run and therefore the same cohort.
+        # A new dispatch receives fresh cache scopes; reruns keep their seed.
+        cohort="discourse-r${GITHUB_RUN_ID}-${STRATEGY}-${ARCHITECTURE}"
+        echo "docker_tag=${cohort}-docker" >> "$GITHUB_OUTPUT"
+        echo "ccache_tag=${cohort}-ccache" >> "$GITHUB_OUTPUT"
+
+    - name: Configure the isolated BoringCache plan
+      if: startsWith(inputs.strategy, 'boringcache')
+      shell: bash
+      run: |
+        python3 ./scripts/configure-benchmark-cache-scope.py .boringcache.toml \
+          --docker-tag "${{ steps.scope.outputs.docker_tag }}" \
+          --ccache-tag "${{ steps.scope.outputs.ccache_tag }}"
+
+    - name: Set up Buildx for GitHub Actions cache
+      if: inputs.strategy == 'gha'
+      uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+    - name: Set up BoringCache for the upstream Bake graph
+      if: startsWith(inputs.strategy, 'boringcache')
+      uses: boringcache/one@e24257b122813ad11d53b9ed024b474ca4946ad2 # v1.19.1
+      with:
+        cli-version: v1.19.1
+        trust-policy: restore
+        setup: none
+        mode: docker
+        working-directory: image
+        docker-command: setup
+        diagnostics: summary
+        verify: none
+        fail-on-cache-error: true
+        metadata-hints: benchmark=discourse-docker,phase=${{ inputs.phase }},architecture=${{ inputs.architecture }},variant=${{ inputs.strategy }}
+      env:
+        BORINGCACHE_RESTORE_TOKEN: ${{ env.BORINGCACHE_RESTORE_TOKEN }}
+        BORINGCACHE_SAVE_TOKEN: ""
+
+    - name: Start image-factory timer
+      id: timer
+      shell: bash
+      run: echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+    - name: Build with GitHub Actions cache
+      if: inputs.strategy == 'gha'
+      shell: bash
+      working-directory: image
+      env:
+        ARCH: ${{ inputs.architecture }}
+        DATESTAMP: ${{ inputs.source-datestamp }}
+        DISCOURSE_REF: ${{ inputs.source-sha }}
+        CACHE_SCOPE: ${{ steps.scope.outputs.docker_tag }}
+      run: |
+        set -euo pipefail
+        targets=(
+          base-runtime-deps
+          base-slim-main
+          base-slim-stable
+          base-web-only-main
+          base-web-only-stable
+          base-release-main
+          base-release-stable
+          test-release
+        )
+        for target in "${targets[@]}"; do
+          scope="${CACHE_SCOPE}-${target}"
+          args=(
+            "$target"
+            --load
+            "--set=${target}.cache-from=type=gha,scope=${scope}"
+            "--set=${target}.cache-to=type=gha,scope=${scope},mode=max"
+          )
+          if [[ "$target" == "test-release" ]]; then
+            args+=("--set=base-slim-main.cache-from=type=gha,scope=${CACHE_SCOPE}-base-slim-main")
+          fi
+          docker buildx bake "${args[@]}"
+        done
+
+    - name: Build with BoringCache layer cache
+      if: inputs.strategy == 'boringcache'
+      shell: bash
+      working-directory: image
+      env:
+        ARCH: ${{ inputs.architecture }}
+        DATESTAMP: ${{ inputs.source-datestamp }}
+        DISCOURSE_REF: ${{ inputs.source-sha }}
+        RUST_LOG: warn
+      run: |
+        set -euo pipefail
+        targets=(
+          base-runtime-deps
+          base-slim-main
+          base-slim-stable
+          base-web-only-main
+          base-web-only-stable
+          base-release-main
+          base-release-stable
+          test-release
+        )
+        for target in "${targets[@]}"; do
+          boringcache docker \
+            --fail-on-cache-error \
+            -- docker buildx bake "$target" --load
+        done
+
+    - name: Build with BoringCache layer, ccache, and mountcache
+      if: inputs.strategy == 'boringcache-optimized'
+      shell: bash
+      working-directory: image
+      env:
+        ARCH: ${{ inputs.architecture }}
+        DATESTAMP: ${{ inputs.source-datestamp }}
+        DISCOURSE_REF: ${{ inputs.source-sha }}
+        RUST_LOG: warn
+      run: |
+        set -euo pipefail
+        targets=(
+          base-runtime-deps
+          base-slim-main
+          base-slim-stable
+          base-web-only-main
+          base-web-only-stable
+          base-release-main
+          base-release-stable
+          test-release
+        )
+        for target in "${targets[@]}"; do
+          boringcache docker \
+            --fail-on-cache-error \
+            --mount-cache \
+            --tool-cache ccache \
+            -- docker buildx bake "$target" --load
+        done
+
+    - name: Capture image-factory timing
+      id: timing
+      shell: bash
+      env:
+        STARTED_AT: ${{ steps.timer.outputs.started_at }}
+      run: echo "seconds=$(( $(date +%s) - STARTED_AT ))" >> "$GITHUB_OUTPUT"
+
+    - name: Write phase evidence
+      shell: bash
+      env:
+        STRATEGY: ${{ inputs.strategy }}
+        PHASE: ${{ inputs.phase }}
+        ARCHITECTURE: ${{ inputs.architecture }}
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        BUILD_SECONDS: ${{ steps.timing.outputs.seconds }}
+        DOCKER_TAG: ${{ steps.scope.outputs.docker_tag }}
+        CCACHE_TAG: ${{ steps.scope.outputs.ccache_tag }}
+      run: |
+        set -euo pipefail
+        mkdir -p benchmark-results
+        jq -n \
+          --arg strategy "$STRATEGY" \
+          --arg phase "$PHASE" \
+          --arg architecture "$ARCHITECTURE" \
+          --arg source_sha "$SOURCE_SHA" \
+          --arg docker_tag "$DOCKER_TAG" \
+          --arg ccache_tag "$CCACHE_TAG" \
+          --argjson build_seconds "$BUILD_SECONDS" \
+          '{
+            schema_version: 1,
+            strategy: $strategy,
+            phase: $phase,
+            architecture: $architecture,
+            source_sha: $source_sha,
+            build_seconds: $build_seconds,
+            docker_cache_tag: $docker_tag,
+            ccache_tag: (if $strategy == "boringcache-optimized" then $ccache_tag else null end),
+            github: {
+              repository: env.GITHUB_REPOSITORY,
+              run_id: env.GITHUB_RUN_ID,
+              run_attempt: env.GITHUB_RUN_ATTEMPT
+            }
+          }' > "benchmark-results/${PHASE}-${STRATEGY}-${ARCHITECTURE}.json"
+
+    - name: Run upstream image specs
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source-sha }}
+      run: |
+        timeout --foreground --signal=TERM --kill-after=1m 45m \
+          docker run --rm \
+          -e CI=true \
+          -e RUBY_ONLY=1 \
+          -e USE_TURBO=1 \
+          -e SKIP_PLUGINS=1 \
+          -e SKIP_LINT=1 \
+          -e DISCOURSE_TURBO_RSPEC_RETRY_AND_LOG_FLAKY_TESTS=1 \
+          -e COMMIT_HASH="$SOURCE_SHA" \
+          local_discourse/discourse_test:release
+
+    - name: Publish phase summary
+      if: always()
+      shell: bash
+      env:
+        STRATEGY: ${{ inputs.strategy }}
+        PHASE: ${{ inputs.phase }}
+        ARCHITECTURE: ${{ inputs.architecture }}
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        BUILD_SECONDS: ${{ steps.timing.outputs.seconds }}
+        DOCKER_TAG: ${{ steps.scope.outputs.docker_tag }}
+        CCACHE_TAG: ${{ steps.scope.outputs.ccache_tag }}
+      run: |
+        {
+          echo "### Discourse image factory"
+          echo
+          echo "| Field | Value |"
+          echo "| --- | --- |"
+          echo "| Lane | $STRATEGY |"
+          echo "| Phase | $PHASE |"
+          echo "| Architecture | $ARCHITECTURE |"
+          echo "| Discourse source | \`$SOURCE_SHA\` |"
+          echo "| Timed build | ${BUILD_SECONDS}s |"
+          echo "| Layer cache cohort | \`$DOCKER_TAG\` |"
+          if [[ "$STRATEGY" == "boringcache-optimized" ]]; then
+            echo "| ccache cohort | \`$CCACHE_TAG\` |"
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"

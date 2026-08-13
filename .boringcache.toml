@@ -1,0 +1,19 @@
+workspace = "discourse/discourse-docker"
+
+[proxy]
+metadata-hints = ["project=discourse-docker"]
+
+[adapters.docker]
+tag = "discourse-docker-layer-ccache-mount"
+cache-mode = "max"
+no-platform = true
+no-git = true
+fail-on-cache-error = true
+metadata-hints = ["upstream=discourse", "lane=layer-ccache-mount"]
+
+[adapters.ccache]
+tag = "discourse-docker-ccache"
+no-platform = true
+no-git = true
+fail-on-cache-error = true
+metadata-hints = ["upstream=discourse", "lane=layer-ccache-mount", "tool=ccache"]

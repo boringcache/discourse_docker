@@ -1,0 +1,181 @@
+name: Container cache comparison
+run-name: Discourse image factory | seed and rebuild | ${{ github.ref_name }}
+
+on:
+  push:
+    branches:
+      - agent/benchmark-cache-controls
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BORINGCACHE_RESTORE_TOKEN: ${{ secrets.BORINGCACHE_RESTORE_TOKEN }}
+  BORINGCACHE_SAVE_TOKEN: ${{ secrets.BORINGCACHE_SAVE_TOKEN }}
+  BUILDKIT_PROGRESS: plain
+  DOCKER_BUILD_RECORD_UPLOAD: "false"
+  DOCKER_BUILD_SUMMARY: "false"
+  SEED_SOURCE_SHA: eedf0ac2344c37d66a2c9ab05dc8a83bf3efd9bb
+  SEED_DATESTAMP: "20260811"
+  REBUILD_SOURCE_SHA: 763655f6faf47b088afee1a59e2d97cec5886c97
+  REBUILD_DATESTAMP: "20260812"
+
+jobs:
+  validate:
+    name: Verify benchmark contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout the fork with its history
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout the exact Discourse rebuild source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: discourse/discourse
+          ref: ${{ env.REBUILD_SOURCE_SHA }}
+          path: benchmark-source
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Verify source window and cache wiring
+        run: |
+          set -euo pipefail
+          git -C benchmark-source cat-file -e "${SEED_SOURCE_SHA}^{commit}"
+          git -C benchmark-source merge-base --is-ancestor "$SEED_SOURCE_SHA" "$REBUILD_SOURCE_SHA"
+          [[ "$(git -C benchmark-source rev-list --count "${SEED_SOURCE_SHA}..${REBUILD_SOURCE_SHA}")" == 1 ]]
+          git -C benchmark-source diff --quiet "$SEED_SOURCE_SHA" "$REBUILD_SOURCE_SHA" -- \
+            Gemfile Gemfile.lock package.json pnpm-lock.yaml
+
+          mozilla_fix=a68d4b8707fd653697e8b6b27b336d093dbed5e4
+          git cat-file -e "${mozilla_fix}^{commit}"
+          git merge-base --is-ancestor "$mozilla_fix" HEAD
+
+          grep -Fq 'target=/home/discourse/.cache/bundle,sharing=locked,uid=1000,gid=1000' image/base/Dockerfile
+          grep -Fq 'cp -a /home/discourse/.cache/bundle/. /var/www/discourse/vendor/bundle/' image/base/Dockerfile
+          grep -Fq 'bundle config --local path ./vendor/bundle' image/base/Dockerfile
+          # shellcheck disable=SC2016
+          [[ "$(grep -Fc 'sudo -u discourse bundle install --jobs $(nproc --ignore=1)' image/base/Dockerfile)" -eq 2 ]]
+          grep -Fq 'target=/home/discourse/.local/share/pnpm,sharing=locked,uid=1000,gid=1000' image/base/Dockerfile
+          # shellcheck disable=SC2016
+          grep -Fq 'ccache version ${CCACHE_VERSION}' image/base/Dockerfile
+
+  seed:
+    name: Seed | ${{ matrix.lane.label }} | ${{ matrix.architecture.name }}
+    needs: validate
+    runs-on: ${{ matrix.architecture.runner }}
+    timeout-minutes: 180
+    strategy: &comparison-matrix
+      fail-fast: false
+      matrix:
+        lane:
+          - {label: GitHub Actions, strategy: gha}
+          - {label: BoringCache layer, strategy: boringcache}
+          - {label: BoringCache layer + ccache + mountcache, strategy: boringcache-optimized}
+        architecture:
+          - {name: amd64, runner: ubuntu-24.04}
+          - {name: arm64, runner: ubuntu-24.04-arm}
+    steps:
+      - name: Checkout fork benchmark branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Build seed source
+        uses: ./.github/actions/discourse-cache-build
+        with:
+          strategy: ${{ matrix.lane.strategy }}
+          phase: seed
+          source-sha: ${{ env.SEED_SOURCE_SHA }}
+          source-datestamp: ${{ env.SEED_DATESTAMP }}
+          architecture: ${{ matrix.architecture.name }}
+
+      - name: Upload seed evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.2.0
+        with:
+          name: phase-seed-${{ matrix.lane.strategy }}-${{ matrix.architecture.name }}
+          path: benchmark-results/
+          if-no-files-found: warn
+          retention-days: 30
+
+  rebuild:
+    name: Rebuild | ${{ matrix.lane.label }} | ${{ matrix.architecture.name }}
+    if: ${{ always() && !contains(fromJSON('["cancelled", "skipped"]'), needs.seed.result) }}
+    needs: seed
+    runs-on: ${{ matrix.architecture.runner }}
+    timeout-minutes: 180
+    strategy: *comparison-matrix
+    steps:
+      - name: Checkout fork benchmark branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Build rebuild source
+        uses: ./.github/actions/discourse-cache-build
+        with:
+          strategy: ${{ matrix.lane.strategy }}
+          phase: rebuild
+          source-sha: ${{ env.REBUILD_SOURCE_SHA }}
+          source-datestamp: ${{ env.REBUILD_DATESTAMP }}
+          architecture: ${{ matrix.architecture.name }}
+
+      - name: Upload rebuild evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.2.0
+        with:
+          name: phase-rebuild-${{ matrix.lane.strategy }}-${{ matrix.architecture.name }}
+          path: benchmark-results/
+          if-no-files-found: warn
+          retention-days: 30
+
+  report:
+    name: Comparison report
+    if: ${{ always() && needs.rebuild.result != 'cancelled' }}
+    needs: rebuild
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download phase evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: phase-*
+          path: phase-evidence
+
+      - name: Build comparison report
+        run: |
+          set -euo pipefail
+          mkdir -p benchmark-results
+          find phase-evidence -name '*.json' -print0 | sort -z | xargs -0 jq -s 'sort_by(.architecture, .strategy, .phase)' > benchmark-results/comparison.json
+          {
+            echo "## Discourse container cache comparison"
+            echo
+            echo "| Architecture | Lane | Seed | Rebuild | Change |"
+            echo "| --- | --- | ---: | ---: | ---: |"
+            jq -r '
+              group_by([.architecture, .strategy])[] |
+              (map(select(.phase == "seed"))[0]) as $seed |
+              (map(select(.phase == "rebuild"))[0]) as $rebuild |
+              if $seed and $rebuild then
+                "| \($seed.architecture) | \($seed.strategy) | \($seed.build_seconds)s | \($rebuild.build_seconds)s | \((100 * ($seed.build_seconds - $rebuild.build_seconds) / $seed.build_seconds) | floor)% faster |"
+              else empty end
+            ' benchmark-results/comparison.json
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload comparison
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.2.0
+        with:
+          name: discourse-container-cache-comparison
+          path: benchmark-results/
+          if-no-files-found: error
+          retention-days: 30

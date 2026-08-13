@@ -50,6 +50,7 @@ RUN --mount=type=cache,id=discourse-bundle-test-main,target=/home/discourse/.cac
     sudo -u discourse bundle config --local deployment true &&\
     sudo -u discourse bundle config --local path /home/discourse/.cache/bundle &&\
     sudo -u discourse bundle install --jobs $(nproc --ignore=1) &&\
+    ccache --show-stats &&\
     echo "Test installed bundle cache after install:" &&\
     sudo -u discourse du -sh /home/discourse/.cache/bundle &&\
     rm -rf /var/www/discourse/vendor/bundle &&\
