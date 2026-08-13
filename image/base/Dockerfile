@@ -252,20 +252,26 @@ RUN install -dm 0755 -o discourse -g discourse /var/www/discourse &&\
 FROM discourse-slim AS discourse-web-only
 ENV RAILS_ENV=production
 
-RUN --mount=type=cache,id=discourse-bundler-${DISCOURSE_BRANCH},target=/home/discourse/.bundle/cache,sharing=locked,uid=1000,gid=1000 \
+RUN --mount=type=cache,id=discourse-bundle-${DISCOURSE_BRANCH},target=/home/discourse/.cache/bundle,sharing=locked,uid=1000,gid=1000 \
     cd /var/www/discourse &&\
-    echo "Bundler cache before install:" &&\
-    sudo -u discourse du -sh /home/discourse/.bundle/cache &&\
+    echo "Installed bundle cache before install:" &&\
+    sudo -u discourse du -sh /home/discourse/.cache/bundle &&\
     sudo -u discourse bundle config --local deployment true &&\
-    sudo -u discourse bundle config --local path ./vendor/bundle &&\
+    sudo -u discourse bundle config --local path /home/discourse/.cache/bundle &&\
     sudo -u discourse bundle config --local without test development &&\
-    sudo -u discourse env BUNDLE_GLOBAL_GEM_CACHE=true BUNDLE_USER_CACHE=/home/discourse/.bundle/cache bundle install --jobs $(nproc --ignore=1) &&\
-    echo "Bundler cache after install:" &&\
-    sudo -u discourse du -sh /home/discourse/.bundle/cache &&\
+    sudo -u discourse bundle install --jobs $(nproc --ignore=1) &&\
+    echo "Installed bundle cache after install:" &&\
+    sudo -u discourse du -sh /home/discourse/.cache/bundle &&\
+    rm -rf /var/www/discourse/vendor/bundle &&\
+    install -dm 0755 -o discourse -g discourse /var/www/discourse/vendor/bundle &&\
+    cp -a /home/discourse/.cache/bundle/. /var/www/discourse/vendor/bundle/ &&\
+    sudo -u discourse bundle config --local path ./vendor/bundle &&\
+    sudo -u discourse bundle check &&\
     find /var/www/discourse/vendor/bundle -name cache -not -path '*/gems/*' -type d -exec rm -rf {} + &&\
     find /var/www/discourse/vendor/bundle -name tmp -type d -exec rm -rf {} +
 
-RUN --mount=type=cache,id=discourse-pnpm-${DISCOURSE_BRANCH},target=/home/discourse/.local/share/pnpm/store,sharing=locked,uid=1000,gid=1000 \
+RUN install -dm 0755 -o discourse -g discourse /home/discourse/.local/share/pnpm
+RUN --mount=type=cache,id=discourse-pnpm-${DISCOURSE_BRANCH},target=/home/discourse/.local/share/pnpm,sharing=locked,uid=1000,gid=1000 \
     cd /var/www/discourse &&\
     sudo -u discourse /bin/bash -c 'pnpm install --frozen-lockfile'
 
