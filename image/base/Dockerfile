@@ -247,17 +247,37 @@ RUN install -dm 0755 -o discourse -g discourse /var/www/discourse &&\
 FROM discourse-slim AS discourse-web-only
 ENV RAILS_ENV=production
 
-RUN cd /var/www/discourse &&\
+RUN --mount=type=cache,id=discourse-bundle-${DISCOURSE_BRANCH},target=/home/discourse/.cache/bundle,sharing=locked \
+    chown discourse:discourse /home/discourse/.cache/bundle &&\
+    cd /var/www/discourse &&\
+    echo "Installed bundle cache before install:" &&\
+    sudo -u discourse du -sh /home/discourse/.cache/bundle &&\
     sudo -u discourse bundle config --local deployment true &&\
-    sudo -u discourse bundle config --local path ./vendor/bundle &&\
+    sudo -u discourse bundle config --local path /home/discourse/.cache/bundle &&\
     sudo -u discourse bundle config --local without test development &&\
     sudo -u discourse bundle install --jobs $(nproc --ignore=1) &&\
+    echo "Installed bundle cache after install:" &&\
+    sudo -u discourse du -sh /home/discourse/.cache/bundle &&\
+    rm -rf /var/www/discourse/vendor/bundle &&\
+    install -dm 0755 -o discourse -g discourse /var/www/discourse/vendor/bundle &&\
+    cp -a /home/discourse/.cache/bundle/. /var/www/discourse/vendor/bundle/ &&\
+    sudo -u discourse bundle config --local path ./vendor/bundle &&\
+    sudo -u discourse bundle install --jobs $(nproc --ignore=1) &&\
+    sudo -u discourse bundle check &&\
     find /var/www/discourse/vendor/bundle -name cache -not -path '*/gems/*' -type d -exec rm -rf {} + &&\
     find /var/www/discourse/vendor/bundle -name tmp -type d -exec rm -rf {} +
 
-RUN --mount=type=cache,id=discourse-pnpm-${DISCOURSE_BRANCH},target=/home/discourse/.local/share/pnpm/store,sharing=locked,uid=1000,gid=1000 \
+RUN install -dm 0755 -o discourse -g discourse /var/www/discourse/.pnpm-store
+RUN --mount=type=cache,id=discourse-pnpm-${DISCOURSE_BRANCH},target=/var/www/discourse/.pnpm-store,sharing=locked \
+    chown discourse:discourse /var/www/discourse/.pnpm-store &&\
     cd /var/www/discourse &&\
-    sudo -u discourse /bin/bash -c 'pnpm install --frozen-lockfile'
+    pnpm_store="$(sudo -u discourse pnpm store path --store-dir=/var/www/discourse/.pnpm-store)" &&\
+    case "$pnpm_store" in /var/www/discourse/.pnpm-store/*) ;; *) echo "Unexpected pnpm store: $pnpm_store" >&2; exit 1 ;; esac &&\
+    echo "pnpm store before install: $pnpm_store" &&\
+    du -sh /var/www/discourse/.pnpm-store &&\
+    sudo -u discourse /bin/bash -c 'pnpm install --store-dir=/var/www/discourse/.pnpm-store --frozen-lockfile' &&\
+    echo "pnpm store after install: $pnpm_store" &&\
+    du -sh /var/www/discourse/.pnpm-store
 
 FROM discourse-web-only AS discourse-release
 RUN --mount=type=tmpfs,target=/var/log \
