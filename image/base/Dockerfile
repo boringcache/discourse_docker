@@ -190,7 +190,6 @@ COPY --from=thpoff-builder /usr/local/sbin/thpoff /usr/local/sbin
 COPY --from=jemalloc-builder /usr/lib/libjemalloc.so /usr/lib
 COPY --from=oxipng-builder /usr/local/bin/jhead /usr/local/bin
 COPY --from=oxipng-builder /usr/local/bin/oxipng /usr/local/bin
-COPY install-redis /tmp/install-redis
 
 # version check: https://rubygems.org/gems/pups
 RUN cd /tmp &&\
