@@ -22,6 +22,10 @@ variable "DEV_IMAGE" {
   default = "local_discourse/discourse_dev"
 }
 
+variable "DISCOURSE_REF" {
+  default = ""
+}
+
 group "base" {
   targets = ["base-slim", "base-web-only", "base-release"]
 }
@@ -60,6 +64,7 @@ target "base-slim" {
   platforms = ["linux/${arch}"]
   args = {
     "DISCOURSE_BRANCH" = "${branch}"
+    "DISCOURSE_REF" = branch == "main" ? DISCOURSE_REF : ""
   }
 }
 
@@ -75,6 +80,7 @@ target "base-web-only" {
   platforms = ["linux/${arch}"]
   args = {
     "DISCOURSE_BRANCH" = "${branch}"
+    "DISCOURSE_REF" = branch == "main" ? DISCOURSE_REF : ""
   }
 }
 
@@ -90,6 +96,7 @@ target "base-release" {
   platforms = ["linux/${arch}"]
   args = {
     "DISCOURSE_BRANCH" = "${branch}"
+    "DISCOURSE_REF" = branch == "main" ? DISCOURSE_REF : ""
   }
 }
 

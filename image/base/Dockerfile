@@ -228,19 +228,29 @@ RUN --mount=type=tmpfs,target=/root/.npm \
 
 FROM discourse-build-base AS discourse-slim
 ARG DISCOURSE_BRANCH=main
+ARG DISCOURSE_REF
 
 # Discourse specific bits
 RUN install -dm 0755 -o discourse -g discourse /var/www/discourse &&\
-    sudo -u discourse git clone --branch $DISCOURSE_BRANCH --filter=tree:0 https://github.com/discourse/discourse.git /var/www/discourse
+    sudo -u discourse git clone --branch "$DISCOURSE_BRANCH" --filter=tree:0 https://github.com/discourse/discourse.git /var/www/discourse &&\
+    if [ -n "$DISCOURSE_REF" ]; then \
+      sudo -u discourse git -C /var/www/discourse fetch --depth 1 origin "$DISCOURSE_REF" &&\
+      sudo -u discourse git -C /var/www/discourse checkout --detach FETCH_HEAD; \
+    fi
 
 FROM discourse-slim AS discourse-web-only
 ENV RAILS_ENV=production
 
-RUN cd /var/www/discourse &&\
+RUN --mount=type=cache,id=discourse-bundler-${DISCOURSE_BRANCH},target=/home/discourse/.bundle/cache,sharing=locked,uid=1000,gid=1000 \
+    cd /var/www/discourse &&\
+    echo "Bundler cache before install:" &&\
+    sudo -u discourse du -sh /home/discourse/.bundle/cache &&\
     sudo -u discourse bundle config --local deployment true &&\
     sudo -u discourse bundle config --local path ./vendor/bundle &&\
     sudo -u discourse bundle config --local without test development &&\
-    sudo -u discourse bundle install --jobs $(nproc --ignore=1) &&\
+    sudo -u discourse env BUNDLE_GLOBAL_GEM_CACHE=true BUNDLE_USER_CACHE=/home/discourse/.bundle/cache bundle install --jobs $(nproc --ignore=1) &&\
+    echo "Bundler cache after install:" &&\
+    sudo -u discourse du -sh /home/discourse/.bundle/cache &&\
     find /var/www/discourse/vendor/bundle -name cache -not -path '*/gems/*' -type d -exec rm -rf {} + &&\
     find /var/www/discourse/vendor/bundle -name tmp -type d -exec rm -rf {} +
 
