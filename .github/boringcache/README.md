@@ -21,9 +21,13 @@ warm another lane. The Bundler mount contains
 the complete installed bundle, not only downloaded gem archives. Each build
 materializes it into `vendor/bundle`, runs a normal `bundle install` there to
 repair or install anything missing, and then uses `bundle check` as a final
-verification. The pnpm mounts cover its complete writable home. Ownership is
-set inside each mounted `RUN`; putting `uid`/`gid` on the mount creates BuildKit
-initialization entries that prevent an empty mount from being hydrated.
+verification. pnpm's store is explicitly fixed to and mounted at
+`/var/www/discourse/.pnpm-store`; when its default home store is a separate
+BuildKit filesystem, pnpm otherwise relocates the real store beside the
+project and leaves the apparent home mount empty. The build logs the resolved
+store path and its before/after size. Ownership is set inside each mounted
+`RUN`; putting `uid`/`gid` on the mount creates BuildKit initialization entries
+that prevent an empty mount from being hydrated.
 
 The seed uses Discourse commit
 `eedf0ac2344c37d66a2c9ab05dc8a83bf3efd9bb`. The rebuild uses its immediate

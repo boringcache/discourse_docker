@@ -66,8 +66,10 @@ jobs:
           grep -Fq 'bundle config --local path ./vendor/bundle' image/base/Dockerfile
           # shellcheck disable=SC2016
           [[ "$(grep -Fc 'sudo -u discourse bundle install --jobs $(nproc --ignore=1)' image/base/Dockerfile)" -eq 2 ]]
-          grep -Fq 'target=/home/discourse/.local/share/pnpm,sharing=locked' image/base/Dockerfile
-          grep -Fq 'chown discourse:discourse /home/discourse/.local/share/pnpm' image/base/Dockerfile
+          grep -Fq 'target=/var/www/discourse/.pnpm-store,sharing=locked' image/base/Dockerfile
+          grep -Fq 'pnpm store path --store-dir=/var/www/discourse/.pnpm-store' image/base/Dockerfile
+          grep -Fq 'pnpm install --store-dir=/var/www/discourse/.pnpm-store --frozen-lockfile' image/base/Dockerfile
+          grep -Fq 'target=/var/www/discourse/.pnpm-store,sharing=locked' image/discourse_test/Dockerfile
           # shellcheck disable=SC2016
           grep -Fq 'ccache version ${CCACHE_VERSION}' image/base/Dockerfile
           # shellcheck disable=SC2016
