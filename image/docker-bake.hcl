@@ -26,10 +26,6 @@ variable "DISCOURSE_REF" {
   default = ""
 }
 
-variable "CCACHE_BENCHMARK_REV" {
-  default = ""
-}
-
 group "base" {
   targets = ["base-slim", "base-web-only", "base-release"]
 }
@@ -67,7 +63,6 @@ target "base-slim" {
   target = "discourse-slim"
   platforms = ["linux/${arch}"]
   args = {
-    "CCACHE_BENCHMARK_REV" = CCACHE_BENCHMARK_REV
     "DISCOURSE_BRANCH" = "${branch}"
     "DISCOURSE_REF" = branch == "main" ? DISCOURSE_REF : ""
   }
@@ -84,7 +79,6 @@ target "base-web-only" {
   target = "discourse-web-only"
   platforms = ["linux/${arch}"]
   args = {
-    "CCACHE_BENCHMARK_REV" = CCACHE_BENCHMARK_REV
     "DISCOURSE_BRANCH" = "${branch}"
     "DISCOURSE_REF" = branch == "main" ? DISCOURSE_REF : ""
   }
@@ -101,7 +95,6 @@ target "base-release" {
   target = "discourse-release"
   platforms = ["linux/${arch}"]
   args = {
-    "CCACHE_BENCHMARK_REV" = CCACHE_BENCHMARK_REV
     "DISCOURSE_BRANCH" = "${branch}"
     "DISCOURSE_REF" = branch == "main" ? DISCOURSE_REF : ""
   }

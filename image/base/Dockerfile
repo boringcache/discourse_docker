@@ -19,9 +19,6 @@ DEBIAN_FRONTEND=noninteractive apt-get -y install wget \
     libfreetype-dev \
     libbrotli-dev
 
-ARG CCACHE_BENCHMARK_REV
-ENV CCACHE_BENCHMARK_REV=${CCACHE_BENCHMARK_REV}
-
 FROM builder AS libheif-builder
 ADD install-libheif /tmp/install-libheif
 RUN /tmp/install-libheif
