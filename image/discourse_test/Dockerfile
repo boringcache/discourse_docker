@@ -43,11 +43,18 @@ RUN /tmp/install-chrome &&\
 
 FROM with_browsers AS release
 
-RUN --mount=type=cache,id=discourse-test-bundler,target=/home/discourse/.bundle/cache,sharing=locked,uid=1000,gid=1000 \
+RUN --mount=type=cache,id=discourse-bundler-main,target=/home/discourse/.bundle/cache,sharing=locked,uid=1000,gid=1000 \
     cd /var/www/discourse &&\
+    echo "Test Bundler cache before install:" &&\
+    sudo -u discourse du -sh /home/discourse/.bundle/cache &&\
     sudo -u discourse bundle config --local deployment true &&\
     sudo -u discourse bundle config --local path ./vendor/bundle &&\
     sudo -u discourse env BUNDLE_GLOBAL_GEM_CACHE=true BUNDLE_USER_CACHE=/home/discourse/.bundle/cache bundle install --jobs $(nproc --ignore=1) &&\
+    echo "Test Bundler cache after install:" &&\
+    sudo -u discourse du -sh /home/discourse/.bundle/cache
+
+RUN --mount=type=cache,id=discourse-pnpm-main,target=/home/discourse/.local/share/pnpm/store,sharing=locked,uid=1000,gid=1000 \
+    cd /var/www/discourse &&\
     sudo -E -u discourse -H /bin/bash -c 'CI=1 pnpm install'
 
 RUN cd /var/www/discourse && sudo -E -u discourse -H bundle exec rake plugin:install_all_official &&\
