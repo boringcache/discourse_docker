@@ -55,6 +55,7 @@ runs:
         mode: docker
         working-directory: image
         docker-command: setup
+        proxy-port: "22244"
         diagnostics: summary
         verify: none
         fail-on-cache-error: true
