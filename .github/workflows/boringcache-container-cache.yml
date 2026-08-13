@@ -60,12 +60,14 @@ jobs:
           git cat-file -e "${mozilla_fix}^{commit}"
           git merge-base --is-ancestor "$mozilla_fix" HEAD
 
-          grep -Fq 'target=/home/discourse/.cache/bundle,sharing=locked,uid=1000,gid=1000' image/base/Dockerfile
+          grep -Fq 'target=/home/discourse/.cache/bundle,sharing=locked' image/base/Dockerfile
+          grep -Fq 'chown discourse:discourse /home/discourse/.cache/bundle' image/base/Dockerfile
           grep -Fq 'cp -a /home/discourse/.cache/bundle/. /var/www/discourse/vendor/bundle/' image/base/Dockerfile
           grep -Fq 'bundle config --local path ./vendor/bundle' image/base/Dockerfile
           # shellcheck disable=SC2016
           [[ "$(grep -Fc 'sudo -u discourse bundle install --jobs $(nproc --ignore=1)' image/base/Dockerfile)" -eq 2 ]]
-          grep -Fq 'target=/home/discourse/.local/share/pnpm,sharing=locked,uid=1000,gid=1000' image/base/Dockerfile
+          grep -Fq 'target=/home/discourse/.local/share/pnpm,sharing=locked' image/base/Dockerfile
+          grep -Fq 'chown discourse:discourse /home/discourse/.local/share/pnpm' image/base/Dockerfile
           # shellcheck disable=SC2016
           grep -Fq 'ccache version ${CCACHE_VERSION}' image/base/Dockerfile
 

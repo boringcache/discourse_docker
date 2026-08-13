@@ -15,7 +15,9 @@ lane injects BoringCache's remote ccache settings. The Bundler mount contains
 the complete installed bundle, not only downloaded gem archives. Each build
 materializes it into `vendor/bundle`, runs a normal `bundle install` there to
 repair or install anything missing, and then uses `bundle check` as a final
-verification. The pnpm mounts cover its complete writable home.
+verification. The pnpm mounts cover its complete writable home. Ownership is
+set inside each mounted `RUN`; putting `uid`/`gid` on the mount creates BuildKit
+initialization entries that prevent an empty mount from being hydrated.
 
 The seed uses Discourse commit
 `eedf0ac2344c37d66a2c9ab05dc8a83bf3efd9bb`. The rebuild uses its immediate
