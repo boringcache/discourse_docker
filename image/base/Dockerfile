@@ -236,7 +236,8 @@ RUN install -dm 0755 -o discourse -g discourse /var/www/discourse &&\
     if [ -n "$DISCOURSE_REF" ]; then \
       sudo -u discourse git -C /var/www/discourse fetch --depth 1 origin "$DISCOURSE_REF" &&\
       sudo -u discourse git -C /var/www/discourse checkout --detach FETCH_HEAD; \
-    fi
+    fi &&\
+    sudo -u discourse git -C /var/www/discourse rev-parse HEAD
 
 FROM discourse-slim AS discourse-web-only
 ENV RAILS_ENV=production
