@@ -22,7 +22,7 @@ DEBIAN_FRONTEND=noninteractive apt-get -y install wget \
     libbrotli-dev
 
 FROM builder AS libheif-builder
-ADD install-libheif /tmp/install-libheif
+COPY install-libheif /tmp/install-libheif
 RUN /tmp/install-libheif
 
 FROM libheif-builder AS imagemagick_builder
@@ -30,7 +30,7 @@ COPY install-imagemagick /tmp/install-imagemagick
 RUN /tmp/install-imagemagick
 
 FROM libheif-builder AS jpegli-builder
-ADD install-jpegli /tmp/install-jpegli
+COPY install-jpegli /tmp/install-jpegli
 RUN /tmp/install-jpegli
 
 FROM libheif-builder AS vips-builder
@@ -266,7 +266,8 @@ RUN --mount=type=cache,id=discourse-bundler-${DISCOURSE_BRANCH},target=/home/dis
     find /var/www/discourse/vendor/bundle -name cache -not -path '*/gems/*' -type d -exec rm -rf {} + &&\
     find /var/www/discourse/vendor/bundle -name tmp -type d -exec rm -rf {} +
 
-RUN cd /var/www/discourse &&\
+RUN --mount=type=cache,id=discourse-pnpm-${DISCOURSE_BRANCH},target=/home/discourse/.local/share/pnpm/store,sharing=locked,uid=1000,gid=1000 \
+    cd /var/www/discourse &&\
     sudo -u discourse /bin/bash -c 'pnpm install --frozen-lockfile'
 
 FROM discourse-web-only AS discourse-release
