@@ -70,6 +70,9 @@ jobs:
           grep -Fq 'chown discourse:discourse /home/discourse/.local/share/pnpm' image/base/Dockerfile
           # shellcheck disable=SC2016
           grep -Fq 'ccache version ${CCACHE_VERSION}' image/base/Dockerfile
+          # shellcheck disable=SC2016
+          grep -Fq -- '-- docker buildx bake "$target" --no-cache --load' \
+            .github/actions/discourse-cache-build/action.yml
 
   seed:
     name: Seed | ${{ matrix.lane.label }} | ${{ matrix.architecture.name }}
@@ -83,6 +86,7 @@ jobs:
           - {label: GitHub Actions, strategy: gha}
           - {label: BoringCache layer, strategy: boringcache}
           - {label: BoringCache layer + ccache + mountcache, strategy: boringcache-optimized}
+          - {label: BoringCache no layer + ccache + mountcache, strategy: boringcache-no-layer}
         architecture:
           - {name: amd64, runner: ubuntu-24.04}
           - {name: arm64, runner: ubuntu-24.04-arm}

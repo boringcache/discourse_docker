@@ -32,6 +32,14 @@ runs:
         cohort="discourse-r${GITHUB_RUN_ID}-${STRATEGY}-${ARCHITECTURE}"
         echo "docker_tag=${cohort}-docker" >> "$GITHUB_OUTPUT"
         echo "ccache_tag=${cohort}-ccache" >> "$GITHUB_OUTPUT"
+        case "$STRATEGY" in
+          boringcache) lane_hint=layer ;;
+          boringcache-optimized) lane_hint=layer-ccache-mount ;;
+          boringcache-no-layer) lane_hint=no-layer-ccache-mount ;;
+          gha) lane_hint=gha ;;
+          *) echo "unknown cache strategy: $STRATEGY" >&2; exit 1 ;;
+        esac
+        echo "lane_hint=${lane_hint}" >> "$GITHUB_OUTPUT"
 
     - name: Configure the isolated BoringCache plan
       if: startsWith(inputs.strategy, 'boringcache')
@@ -39,7 +47,8 @@ runs:
       run: |
         python3 ./scripts/configure-benchmark-cache-scope.py .boringcache.toml \
           --docker-tag "${{ steps.scope.outputs.docker_tag }}" \
-          --ccache-tag "${{ steps.scope.outputs.ccache_tag }}"
+          --ccache-tag "${{ steps.scope.outputs.ccache_tag }}" \
+          --lane "${{ steps.scope.outputs.lane_hint }}"
 
     - name: Set up Buildx for GitHub Actions cache
       if: inputs.strategy == 'gha'
@@ -160,6 +169,35 @@ runs:
             -- docker buildx bake "$target" --load
         done
 
+    - name: Build with BoringCache ccache and mountcache without layer reuse
+      if: inputs.strategy == 'boringcache-no-layer'
+      shell: bash
+      working-directory: image
+      env:
+        ARCH: ${{ inputs.architecture }}
+        DATESTAMP: ${{ inputs.source-datestamp }}
+        DISCOURSE_REF: ${{ inputs.source-sha }}
+        RUST_LOG: warn
+      run: |
+        set -euo pipefail
+        targets=(
+          base-runtime-deps
+          base-slim-main
+          base-slim-stable
+          base-web-only-main
+          base-web-only-stable
+          base-release-main
+          base-release-stable
+          test-release
+        )
+        for target in "${targets[@]}"; do
+          boringcache docker \
+            --fail-on-cache-error \
+            --mount-cache \
+            --tool-cache ccache \
+            -- docker buildx bake "$target" --no-cache --load
+        done
+
     - name: Capture image-factory timing
       id: timing
       shell: bash
@@ -195,8 +233,9 @@ runs:
             architecture: $architecture,
             source_sha: $source_sha,
             build_seconds: $build_seconds,
+            docker_layer_reuse: ($strategy != "boringcache-no-layer"),
             docker_cache_tag: $docker_tag,
-            ccache_tag: (if $strategy == "boringcache-optimized" then $ccache_tag else null end),
+            ccache_tag: (if ($strategy == "boringcache-optimized" or $strategy == "boringcache-no-layer") then $ccache_tag else null end),
             github: {
               repository: env.GITHUB_REPOSITORY,
               run_id: env.GITHUB_RUN_ID,
@@ -242,8 +281,13 @@ runs:
           echo "| Architecture | $ARCHITECTURE |"
           echo "| Discourse source | \`$SOURCE_SHA\` |"
           echo "| Timed build | ${BUILD_SECONDS}s |"
-          echo "| Layer cache cohort | \`$DOCKER_TAG\` |"
-          if [[ "$STRATEGY" == "boringcache-optimized" ]]; then
+          if [[ "$STRATEGY" == "boringcache-no-layer" ]]; then
+            echo "| Docker layer reuse | Disabled (\`--no-cache\`) |"
+          else
+            echo "| Docker layer reuse | Enabled |"
+          fi
+          echo "| Docker cache cohort | \`$DOCKER_TAG\` |"
+          if [[ "$STRATEGY" == "boringcache-optimized" || "$STRATEGY" == "boringcache-no-layer" ]]; then
             echo "| ccache cohort | \`$CCACHE_TAG\` |"
           fi
         } >> "$GITHUB_STEP_SUMMARY"

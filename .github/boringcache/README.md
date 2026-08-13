@@ -4,14 +4,20 @@ This branch runs Discourse's own image factory in `boringcache/discourse_docker`
 It keeps the upstream target-by-target Bake order and uses native GitHub-hosted
 runners: `ubuntu-24.04` for AMD64 and `ubuntu-24.04-arm` for ARM64.
 
-Every architecture builds the same Dockerfiles through three isolated lanes:
+Every architecture builds the same Dockerfiles through four isolated lanes:
 
 1. GitHub Actions layer cache.
 2. BoringCache layer cache.
 3. BoringCache layer cache plus ccache tool cache and BuildKit mountcache.
+4. BoringCache ccache tool cache and BuildKit mountcache with ordinary Docker
+   layer reuse disabled.
 
 The shared Dockerfile owns the ccache 4.13.6 compiler launchers. Only the third
-lane injects BoringCache's remote ccache settings. The Bundler mount contains
+and fourth lanes inject BoringCache's remote ccache settings. The fourth lane
+passes Bake's native `--no-cache` flag for every target, so every Dockerfile
+instruction executes while ccache and cache-mount contents can still be
+restored. Each lane uses separate per-run, per-architecture tags and cannot
+warm another lane. The Bundler mount contains
 the complete installed bundle, not only downloaded gem archives. Each build
 materializes it into `vendor/bundle`, runs a normal `bundle install` there to
 repair or install anything missing, and then uses `bundle check` as a final
