@@ -43,9 +43,35 @@ RUN /tmp/install-chrome &&\
 
 FROM with_browsers AS release
 
-RUN cd /var/www/discourse &&\
+RUN --mount=type=cache,id=discourse-bundle-test-main,target=/home/discourse/.cache/bundle,sharing=locked \
+    chown discourse:discourse /home/discourse/.cache/bundle &&\
+    cd /var/www/discourse &&\
+    echo "Test installed bundle cache before install:" &&\
+    sudo -u discourse du -sh /home/discourse/.cache/bundle &&\
+    sudo -u discourse bundle config --local deployment true &&\
+    sudo -u discourse bundle config --local path /home/discourse/.cache/bundle &&\
     sudo -u discourse bundle install --jobs $(nproc --ignore=1) &&\
-    sudo -E -u discourse -H /bin/bash -c 'CI=1 pnpm install'
+    ccache --show-stats &&\
+    echo "Test installed bundle cache after install:" &&\
+    sudo -u discourse du -sh /home/discourse/.cache/bundle &&\
+    rm -rf /var/www/discourse/vendor/bundle &&\
+    install -dm 0755 -o discourse -g discourse /var/www/discourse/vendor/bundle &&\
+    cp -a /home/discourse/.cache/bundle/. /var/www/discourse/vendor/bundle/ &&\
+    sudo -u discourse bundle config --local path ./vendor/bundle &&\
+    sudo -u discourse bundle install --jobs $(nproc --ignore=1) &&\
+    sudo -u discourse bundle check
+
+RUN install -dm 0755 -o discourse -g discourse /var/www/discourse/.pnpm-store
+RUN --mount=type=cache,id=discourse-pnpm-main,target=/var/www/discourse/.pnpm-store,sharing=locked \
+    chown discourse:discourse /var/www/discourse/.pnpm-store &&\
+    cd /var/www/discourse &&\
+    pnpm_store="$(sudo -E -u discourse -H pnpm store path --store-dir=/var/www/discourse/.pnpm-store)" &&\
+    case "$pnpm_store" in /var/www/discourse/.pnpm-store/*) ;; *) echo "Unexpected pnpm store: $pnpm_store" >&2; exit 1 ;; esac &&\
+    echo "Test pnpm store before install: $pnpm_store" &&\
+    du -sh /var/www/discourse/.pnpm-store &&\
+    sudo -E -u discourse -H /bin/bash -c 'CI=1 pnpm install --store-dir=/var/www/discourse/.pnpm-store' &&\
+    echo "Test pnpm store after install: $pnpm_store" &&\
+    du -sh /var/www/discourse/.pnpm-store
 
 RUN cd /var/www/discourse && sudo -E -u discourse -H bundle exec rake plugin:install_all_official &&\
     LOAD_PLUGINS=1 sudo -E -u discourse -H bundle exec rake plugin:install_all_gems &&\

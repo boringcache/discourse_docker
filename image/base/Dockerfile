@@ -4,8 +4,10 @@
 ARG DEBIAN_RELEASE=trixie
 ARG RUBY_VERSION=3.4.10
 ARG FROM_DOCKER_IMAGE_TAG=${RUBY_VERSION}-${DEBIAN_RELEASE}-slim
+ARG DATESTAMP=0
 
 FROM discourse/ruby:${FROM_DOCKER_IMAGE_TAG} AS builder
+ARG DATESTAMP
 ARG DEBIAN_RELEASE
 ENV DEBIAN_RELEASE=${DEBIAN_RELEASE}
 RUN echo "deb http://deb.debian.org/debian ${DEBIAN_RELEASE}-backports main" > "/etc/apt/sources.list.d/${DEBIAN_RELEASE}-backports.list"
@@ -13,46 +15,69 @@ RUN apt update &&\
 DEBIAN_FRONTEND=noninteractive apt-get -y install wget \
     autoconf build-essential \
     git \
+    ccache \
     cmake \
     gnupg \
     libpcre2-dev \
     libfreetype-dev \
     libbrotli-dev
 
+# BoringCache v1.19.1 targets ccache 4.13.6's @-attribute syntax. Keep
+# Debian's compiler launchers, but use the same released ccache binary on both
+# native runner architectures.
+ARG CCACHE_VERSION=4.13.6
+RUN set -eux; \
+    architecture="$(dpkg --print-architecture)"; \
+    case "$architecture" in \
+      amd64) release_arch=x86_64; checksum=567b1b648411819590f918f045218c92da14418bdec3b30db94a3b4f5d77cf13 ;; \
+      arm64) release_arch=aarch64; checksum=fae67fb810e1f0d390409af6603355483572229e19183e68574cd0f851a6fb98 ;; \
+      *) echo "Unsupported ccache architecture: $architecture" >&2; exit 1 ;; \
+    esac; \
+    archive="ccache-${CCACHE_VERSION}-linux-${release_arch}-glibc.tar.gz"; \
+    wget --quiet --tries=8 "https://github.com/ccache/ccache/releases/download/v${CCACHE_VERSION}/${archive}" -O "/tmp/${archive}"; \
+    echo "${checksum}  /tmp/${archive}" | sha256sum --check; \
+    tar xzf "/tmp/${archive}" -C /tmp; \
+    install -m 0755 "/tmp/ccache-${CCACHE_VERSION}-linux-${release_arch}-glibc/ccache" /usr/bin/ccache; \
+    ccache --version | grep -F "ccache version ${CCACHE_VERSION}"; \
+    rm -rf "/tmp/${archive}" "/tmp/ccache-${CCACHE_VERSION}-linux-${release_arch}-glibc"
+
+ENV PATH="/usr/lib/ccache:${PATH}" \
+    CCACHE_COMPILERCHECK=content
+
 FROM builder AS libheif-builder
 ADD install-libheif /tmp/install-libheif
-RUN /tmp/install-libheif
+RUN /tmp/install-libheif && ccache --show-stats
 
 FROM libheif-builder AS imagemagick_builder
 ADD install-imagemagick /tmp/install-imagemagick
-RUN /tmp/install-imagemagick
+RUN /tmp/install-imagemagick && ccache --show-stats
 
 FROM libheif-builder AS jpegli-builder
 ADD install-jpegli /tmp/install-jpegli
-RUN /tmp/install-jpegli
+RUN /tmp/install-jpegli && ccache --show-stats
 
 FROM libheif-builder AS vips-builder
 COPY --from=jpegli-builder /usr/local/lib/jpegli /usr/local/lib/jpegli
 ADD install-vips /tmp/install-vips
-RUN /tmp/install-vips
+RUN /tmp/install-vips && ccache --show-stats
 
 FROM builder AS thpoff-builder
 # This tool allows us to disable huge page support for our current process
 # since the flag is preserved through forks and execs it can be used on any
 # process
 ADD thpoff.c /src/thpoff.c
-RUN gcc -o /usr/local/sbin/thpoff /src/thpoff.c && rm /src/thpoff.c
+RUN gcc -o /usr/local/sbin/thpoff /src/thpoff.c && rm /src/thpoff.c && ccache --show-stats
 
 FROM builder AS jemalloc-builder
 ADD install-jemalloc /tmp/install-jemalloc
-RUN /tmp/install-jemalloc
+RUN /tmp/install-jemalloc && ccache --show-stats
 
 FROM builder AS oxipng-builder
 ADD install-oxipng /tmp/install-oxipng
-RUN /tmp/install-oxipng
+RUN /tmp/install-oxipng && ccache --show-stats
 
 FROM discourse/ruby:${FROM_DOCKER_IMAGE_TAG} AS discourse-runtime-base
-
+ARG DATESTAMP
 ARG DEBIAN_RELEASE
 ARG PG_MAJOR=18
 ARG PG_MAJOR_OLD=15
@@ -198,6 +223,11 @@ COPY etc/  /etc
 COPY sbin/ /sbin
 
 FROM discourse-runtime-base AS discourse-build-base
+COPY --from=builder /usr/bin/ccache /usr/bin/ccache
+COPY --from=builder /usr/lib/ccache /usr/lib/ccache
+ENV PATH="/usr/lib/ccache:${PATH}" \
+    CCACHE_COMPILERCHECK=content
+
 # From https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
 # fingerprint: 6F71 F525 2828 41EE DAF8 51B4 2F59 B5F9 9B1B E0B4
 ADD nodesource-repo.gpg.key /usr/share/keyrings/nodesource.asc
@@ -236,16 +266,38 @@ RUN install -dm 0755 -o discourse -g discourse /var/www/discourse &&\
 FROM discourse-slim AS discourse-web-only
 ENV RAILS_ENV=production
 
-RUN cd /var/www/discourse &&\
+RUN --mount=type=cache,id=discourse-bundle-${DISCOURSE_BRANCH},target=/home/discourse/.cache/bundle,sharing=locked \
+    chown discourse:discourse /home/discourse/.cache/bundle &&\
+    cd /var/www/discourse &&\
+    echo "Installed bundle cache before install:" &&\
+    sudo -u discourse du -sh /home/discourse/.cache/bundle &&\
     sudo -u discourse bundle config --local deployment true &&\
-    sudo -u discourse bundle config --local path ./vendor/bundle &&\
+    sudo -u discourse bundle config --local path /home/discourse/.cache/bundle &&\
     sudo -u discourse bundle config --local without test development &&\
     sudo -u discourse bundle install --jobs $(nproc --ignore=1) &&\
+    ccache --show-stats &&\
+    echo "Installed bundle cache after install:" &&\
+    sudo -u discourse du -sh /home/discourse/.cache/bundle &&\
+    rm -rf /var/www/discourse/vendor/bundle &&\
+    install -dm 0755 -o discourse -g discourse /var/www/discourse/vendor/bundle &&\
+    cp -a /home/discourse/.cache/bundle/. /var/www/discourse/vendor/bundle/ &&\
+    sudo -u discourse bundle config --local path ./vendor/bundle &&\
+    sudo -u discourse bundle install --jobs $(nproc --ignore=1) &&\
+    sudo -u discourse bundle check &&\
     find /var/www/discourse/vendor/bundle -name cache -not -path '*/gems/*' -type d -exec rm -rf {} + &&\
     find /var/www/discourse/vendor/bundle -name tmp -type d -exec rm -rf {} +
 
-RUN cd /var/www/discourse &&\
-    sudo -u discourse /bin/bash -c 'pnpm install --frozen-lockfile'
+RUN install -dm 0755 -o discourse -g discourse /var/www/discourse/.pnpm-store
+RUN --mount=type=cache,id=discourse-pnpm-${DISCOURSE_BRANCH},target=/var/www/discourse/.pnpm-store,sharing=locked \
+    chown discourse:discourse /var/www/discourse/.pnpm-store &&\
+    cd /var/www/discourse &&\
+    pnpm_store="$(sudo -u discourse pnpm store path --store-dir=/var/www/discourse/.pnpm-store)" &&\
+    case "$pnpm_store" in /var/www/discourse/.pnpm-store/*) ;; *) echo "Unexpected pnpm store: $pnpm_store" >&2; exit 1 ;; esac &&\
+    echo "pnpm store before install: $pnpm_store" &&\
+    du -sh /var/www/discourse/.pnpm-store &&\
+    sudo -u discourse /bin/bash -c 'pnpm install --store-dir=/var/www/discourse/.pnpm-store --frozen-lockfile' &&\
+    echo "pnpm store after install: $pnpm_store" &&\
+    du -sh /var/www/discourse/.pnpm-store
 
 FROM discourse-web-only AS discourse-release
 RUN --mount=type=tmpfs,target=/var/log \
