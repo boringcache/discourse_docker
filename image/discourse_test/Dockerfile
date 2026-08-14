@@ -29,12 +29,12 @@ FROM base AS with_browsers
 ENV TESTEM_DEFAULT_BROWSER=Chrome
 # From https://dl.google.com/linux/linux_signing_key.pub
 # fingerprint: EB4C 1BFD 4F04 2F6D DDCC EC91 7721 F63B D38B 4796
-ADD google-linux-signing-key.pub /usr/share/keyrings/google-chrome.asc
-ADD install-chrome /tmp/install-chrome
+COPY google-linux-signing-key.pub /usr/share/keyrings/google-chrome.asc
+COPY install-chrome /tmp/install-chrome
 # From https://archive.mozilla.org/pub/firefox/releases/<any version>/KEY
 # fingerprint: 14F2 6682 D091 6CDD 81E3 7B6D 61B7 B526 D98F 0353
-ADD mozilla-release-key.asc /tmp/mozilla-release-key.asc
-ADD install-firefox /tmp/install-firefox
+COPY mozilla-release-key.asc /tmp/mozilla-release-key.asc
+COPY install-firefox /tmp/install-firefox
 RUN /tmp/install-chrome &&\
     apt update &&\
     apt install -y libxss1 firefox-esr &&\
@@ -43,9 +43,35 @@ RUN /tmp/install-chrome &&\
 
 FROM with_browsers AS release
 
-RUN cd /var/www/discourse &&\
+RUN --mount=type=cache,id=discourse-bundle-test-main,target=/home/discourse/.cache/bundle,sharing=locked \
+    chown discourse:discourse /home/discourse/.cache/bundle &&\
+    cd /var/www/discourse &&\
+    echo "Test installed bundle cache before install:" &&\
+    sudo -u discourse du -sh /home/discourse/.cache/bundle &&\
+    sudo -u discourse bundle config --local deployment true &&\
+    sudo -u discourse bundle config --local path /home/discourse/.cache/bundle &&\
     sudo -u discourse bundle install --jobs $(nproc --ignore=1) &&\
-    sudo -E -u discourse -H /bin/bash -c 'CI=1 pnpm install'
+    ccache --show-stats &&\
+    echo "Test installed bundle cache after install:" &&\
+    sudo -u discourse du -sh /home/discourse/.cache/bundle &&\
+    rm -rf /var/www/discourse/vendor/bundle &&\
+    install -dm 0755 -o discourse -g discourse /var/www/discourse/vendor/bundle &&\
+    cp -a /home/discourse/.cache/bundle/. /var/www/discourse/vendor/bundle/ &&\
+    sudo -u discourse bundle config --local path ./vendor/bundle &&\
+    sudo -u discourse bundle install --jobs $(nproc --ignore=1) &&\
+    sudo -u discourse bundle check
+
+RUN install -dm 0755 -o discourse -g discourse /var/www/discourse/.pnpm-store
+RUN --mount=type=cache,id=discourse-pnpm-main,target=/var/www/discourse/.pnpm-store,sharing=locked \
+    chown discourse:discourse /var/www/discourse/.pnpm-store &&\
+    cd /var/www/discourse &&\
+    pnpm_store="$(sudo -E -u discourse -H pnpm store path --store-dir=/var/www/discourse/.pnpm-store)" &&\
+    case "$pnpm_store" in /var/www/discourse/.pnpm-store/*) ;; *) echo "Unexpected pnpm store: $pnpm_store" >&2; exit 1 ;; esac &&\
+    echo "Test pnpm store before install: $pnpm_store" &&\
+    du -sh /var/www/discourse/.pnpm-store &&\
+    sudo -E -u discourse -H /bin/bash -c 'CI=1 pnpm install --store-dir=/var/www/discourse/.pnpm-store' &&\
+    echo "Test pnpm store after install: $pnpm_store" &&\
+    du -sh /var/www/discourse/.pnpm-store
 
 RUN cd /var/www/discourse && sudo -E -u discourse -H bundle exec rake plugin:install_all_official &&\
     LOAD_PLUGINS=1 sudo -E -u discourse -H bundle exec rake plugin:install_all_gems &&\
