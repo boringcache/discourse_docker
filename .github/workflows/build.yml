@@ -53,6 +53,10 @@ jobs:
       ARCH: ${{ matrix.arch }}
       CACHE_IMAGE: ghcr.io/${{ github.repository }}
       BORINGCACHE_ENABLED: ${{ vars.BORINGCACHE_ENABLED == 'true' && (secrets.BORINGCACHE_RESTORE_TOKEN != '' || (github.event_name != 'pull_request' && secrets.BORINGCACHE_SAVE_TOKEN != '')) && 'true' || 'false' }}
+      # The setup action owns the managed builder; the later CLI-owned Bake
+      # commands need the same credentials for tool and mount caches.
+      BORINGCACHE_RESTORE_TOKEN: ${{ secrets.BORINGCACHE_RESTORE_TOKEN }}
+      BORINGCACHE_SAVE_TOKEN: ${{ github.event_name != 'pull_request' && secrets.BORINGCACHE_SAVE_TOKEN || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -84,9 +88,6 @@ jobs:
           verify: none
           fail-on-cache-error: false
           metadata-hints: workflow=build,architecture=${{ matrix.arch }}
-        env:
-          BORINGCACHE_RESTORE_TOKEN: ${{ secrets.BORINGCACHE_RESTORE_TOKEN }}
-          BORINGCACHE_SAVE_TOKEN: ${{ github.event_name != 'pull_request' && secrets.BORINGCACHE_SAVE_TOKEN || '' }}
 
       - name: Login to Docker Hub
         if: ${{ github.event_name == 'schedule' || github.event_name == 'push' }}
@@ -279,6 +280,8 @@ jobs:
     env:
       ARCH: ${{ matrix.arch }}
       BORINGCACHE_ENABLED: ${{ vars.BORINGCACHE_ENABLED == 'true' && secrets.BORINGCACHE_RESTORE_TOKEN != '' && secrets.BORINGCACHE_SAVE_TOKEN != '' && 'true' || 'false' }}
+      BORINGCACHE_RESTORE_TOKEN: ${{ secrets.BORINGCACHE_RESTORE_TOKEN }}
+      BORINGCACHE_SAVE_TOKEN: ${{ github.event_name != 'pull_request' && secrets.BORINGCACHE_SAVE_TOKEN || '' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -303,9 +306,6 @@ jobs:
           verify: none
           fail-on-cache-error: false
           metadata-hints: workflow=setup-wizard,architecture=${{ matrix.arch }}
-        env:
-          BORINGCACHE_RESTORE_TOKEN: ${{ secrets.BORINGCACHE_RESTORE_TOKEN }}
-          BORINGCACHE_SAVE_TOKEN: ${{ github.event_name != 'pull_request' && secrets.BORINGCACHE_SAVE_TOKEN || '' }}
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
