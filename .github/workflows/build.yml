@@ -38,7 +38,7 @@ jobs:
   base:
     # `cdck-linux-8-core` for amd64 builds
     # `ubuntu-24.04-8core-arm` for arm64 builds
-    runs-on: ${{ matrix.arch == 'amd64' && (vars.AMD64_RUNNER || 'ubuntu-24.04') || (vars.ARM64_RUNNER || 'ubuntu-24.04-arm') }}
+    runs-on: ${{ (matrix.arch == 'amd64' && vars.AMD64_RUNNER) || vars.ARM64_RUNNER }}
     strategy:
       matrix:
         arch: [amd64, arm64]
@@ -269,7 +269,7 @@ jobs:
 
   setup_wizard:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'push' }}
-    runs-on: ${{ matrix.arch == 'amd64' && (vars.AMD64_RUNNER || 'ubuntu-24.04') || (vars.ARM64_RUNNER || 'ubuntu-24.04-arm') }}
+    runs-on: ${{ (matrix.arch == 'amd64' && vars.AMD64_RUNNER) || vars.ARM64_RUNNER }}
     strategy:
       matrix:
         arch: [amd64, arm64]
