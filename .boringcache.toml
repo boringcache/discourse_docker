@@ -1,0 +1,13 @@
+workspace = "discourse/discourse-docker"
+
+[proxy]
+metadata-hints = ["project=discourse-docker"]
+
+[adapters.docker]
+tag = "discourse-images-proposal"
+cache-mode = "max"
+metadata-hints = ["tool=oci", "lane=image"]
+
+[adapters.ccache]
+tag = "discourse-native-image-proposal"
+metadata-hints = ["tool=ccache", "lane=image"]
