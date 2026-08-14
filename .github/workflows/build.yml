@@ -38,7 +38,7 @@ jobs:
   base:
     # `cdck-linux-8-core` for amd64 builds
     # `ubuntu-24.04-8core-arm` for arm64 builds
-    runs-on: ${{ (matrix.arch == 'amd64' && vars.AMD64_RUNNER) || vars.ARM64_RUNNER }}
+    runs-on: ${{ matrix.arch == 'amd64' && (vars.AMD64_RUNNER || 'ubuntu-24.04') || (vars.ARM64_RUNNER || 'ubuntu-24.04-arm') }}
     strategy:
       matrix:
         arch: [amd64, arm64]
@@ -52,18 +52,42 @@ jobs:
       DATESTAMP: ${{ needs.timestamp.outputs.datestamp }}
       ARCH: ${{ matrix.arch }}
       CACHE_IMAGE: ghcr.io/${{ github.repository }}
+      BORINGCACHE_ENABLED: ${{ vars.BORINGCACHE_ENABLED == 'true' && (secrets.BORINGCACHE_RESTORE_TOKEN != '' || (github.event_name != 'pull_request' && secrets.BORINGCACHE_SAVE_TOKEN != '')) && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx
+        if: env.BORINGCACHE_ENABLED != 'true'
+        uses: docker/setup-buildx-action@v3
+
       - name: Login to cache registry
+        if: env.BORINGCACHE_ENABLED != 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up BoringCache
+        if: env.BORINGCACHE_ENABLED == 'true'
+        uses: boringcache/one@e24257b122813ad11d53b9ed024b474ca4946ad2 # v1.19.1
+        with:
+          cli-version: v1.19.1
+          trust-policy: auto
+          setup: none
+          mode: docker
+          working-directory: image
+          docker-command: setup
+          diagnostics: summary
+          verify: none
+          fail-on-cache-error: false
+          metadata-hints: workflow=build,architecture=${{ matrix.arch }}
+        env:
+          BORINGCACHE_RESTORE_TOKEN: ${{ secrets.BORINGCACHE_RESTORE_TOKEN }}
+          BORINGCACHE_SAVE_TOKEN: ${{ github.event_name != 'pull_request' && secrets.BORINGCACHE_SAVE_TOKEN || '' }}
+
       - name: Login to Docker Hub
         if: ${{ github.event_name == 'schedule' || github.event_name == 'push' }}
         uses: docker/login-action@v3
@@ -72,26 +96,49 @@ jobs:
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
       - name: Build deps
         run: |
-          docker buildx bake base-runtime-deps -f docker-bake.hcl -f docker-bake.cache.hcl --load
+          if [[ "$BORINGCACHE_ENABLED" == "true" ]]; then
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake base-runtime-deps --load
+          else
+            docker buildx bake base-runtime-deps -f docker-bake.hcl -f docker-bake.cache.hcl --load
+          fi
 
       - name: Build slim image
         run: |
-          docker buildx bake base-slim-main -f docker-bake.hcl -f docker-bake.cache.hcl
-          docker buildx bake base-slim-stable -f docker-bake.hcl -f docker-bake.cache.hcl
+          if [[ "$BORINGCACHE_ENABLED" == "true" ]]; then
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake base-slim-main
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake base-slim-stable
+          else
+            docker buildx bake base-slim-main -f docker-bake.hcl -f docker-bake.cache.hcl
+            docker buildx bake base-slim-stable -f docker-bake.hcl -f docker-bake.cache.hcl
+          fi
 
       - name: Build web only image
         run: |
-          docker buildx bake base-web-only-main -f docker-bake.hcl -f docker-bake.cache.hcl --load
-          docker buildx bake base-web-only-stable -f docker-bake.hcl -f docker-bake.cache.hcl --load
+          if [[ "$BORINGCACHE_ENABLED" == "true" ]]; then
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake base-web-only-main --load
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake base-web-only-stable --load
+          else
+            docker buildx bake base-web-only-main -f docker-bake.hcl -f docker-bake.cache.hcl --load
+            docker buildx bake base-web-only-stable -f docker-bake.hcl -f docker-bake.cache.hcl --load
+          fi
 
       - name: Build release image
         run: |
-          docker buildx bake base-release-main -f docker-bake.hcl -f docker-bake.cache.hcl --load
-          docker buildx bake base-release-stable -f docker-bake.hcl -f docker-bake.cache.hcl --load
+          if [[ "$BORINGCACHE_ENABLED" == "true" ]]; then
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake base-release-main --load
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake base-release-stable --load
+          else
+            docker buildx bake base-release-main -f docker-bake.hcl -f docker-bake.cache.hcl --load
+            docker buildx bake base-release-stable -f docker-bake.hcl -f docker-bake.cache.hcl --load
+          fi
 
       - name: Build test images
         run: |
-          docker buildx bake test-release -f docker-bake.hcl -f docker-bake.cache.hcl --load
+          if [[ "$BORINGCACHE_ENABLED" == "true" ]]; then
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake test-release --load
+          else
+            docker buildx bake test-release -f docker-bake.hcl -f docker-bake.cache.hcl --load
+          fi
 
       - name: run specs for `main` branch
         if: vars.SKIP_TESTS != '1'
@@ -101,14 +148,24 @@ jobs:
       - name: Build and push test image
         if: ${{ github.event_name == 'schedule' || github.event_name == 'push' }}
         run: |
-          docker buildx bake test-slim -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/test-slim.json
-          docker buildx bake test-slim-browsers -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/test-slim-browsers.json
-          docker buildx bake test-release -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/test-release.json
+          if [[ "$BORINGCACHE_ENABLED" == "true" ]]; then
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake test-slim -f docker-bake.hcl -f docker-bake.push.hcl --metadata-file=/tmp/test-slim.json
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake test-slim-browsers -f docker-bake.hcl -f docker-bake.push.hcl --metadata-file=/tmp/test-slim-browsers.json
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake test-release -f docker-bake.hcl -f docker-bake.push.hcl --metadata-file=/tmp/test-release.json
+          else
+            docker buildx bake test-slim -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/test-slim.json
+            docker buildx bake test-slim-browsers -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/test-slim-browsers.json
+            docker buildx bake test-release -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/test-release.json
+          fi
 
       - name: Build and push dev image
         if: ${{ github.event_name == 'schedule' || github.event_name == 'push' }}
         run: |
-          docker buildx bake --allow=fs.read=../templates dev -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/dev.json
+          if [[ "$BORINGCACHE_ENABLED" == "true" ]]; then
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake --allow=fs.read=../templates dev -f docker-bake.hcl -f docker-bake.push.hcl --metadata-file=/tmp/dev.json
+          else
+            docker buildx bake --allow=fs.read=../templates dev -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/dev.json
+          fi
 
       - name: Print summary
         run: |
@@ -121,13 +178,23 @@ jobs:
       - name: push to dockerhub
         if: ${{ github.event_name == 'schedule' || github.event_name == 'push' }}
         run: |
-          docker buildx bake base-runtime-deps -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/base-runtime-deps.json
-          docker buildx bake base-slim-main -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/base-slim-main.json
-          docker buildx bake base-slim-stable -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/base-slim-stable.json
-          docker buildx bake base-web-only-main -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/base-web-only-main.json
-          docker buildx bake base-web-only-stable -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/base-web-only-stable.json
-          docker buildx bake base-release-main -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/base-release-main.json
-          docker buildx bake base-release-stable -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/base-release-stable.json
+          if [[ "$BORINGCACHE_ENABLED" == "true" ]]; then
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake base-runtime-deps -f docker-bake.hcl -f docker-bake.push.hcl --metadata-file=/tmp/base-runtime-deps.json
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake base-slim-main -f docker-bake.hcl -f docker-bake.push.hcl --metadata-file=/tmp/base-slim-main.json
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake base-slim-stable -f docker-bake.hcl -f docker-bake.push.hcl --metadata-file=/tmp/base-slim-stable.json
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake base-web-only-main -f docker-bake.hcl -f docker-bake.push.hcl --metadata-file=/tmp/base-web-only-main.json
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake base-web-only-stable -f docker-bake.hcl -f docker-bake.push.hcl --metadata-file=/tmp/base-web-only-stable.json
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake base-release-main -f docker-bake.hcl -f docker-bake.push.hcl --metadata-file=/tmp/base-release-main.json
+            boringcache docker --mount-cache --tool-cache ccache -- docker buildx bake base-release-stable -f docker-bake.hcl -f docker-bake.push.hcl --metadata-file=/tmp/base-release-stable.json
+          else
+            docker buildx bake base-runtime-deps -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/base-runtime-deps.json
+            docker buildx bake base-slim-main -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/base-slim-main.json
+            docker buildx bake base-slim-stable -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/base-slim-stable.json
+            docker buildx bake base-web-only-main -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/base-web-only-main.json
+            docker buildx bake base-web-only-stable -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/base-web-only-stable.json
+            docker buildx bake base-release-main -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/base-release-main.json
+            docker buildx bake base-release-stable -f docker-bake.hcl -f docker-bake.push.hcl -f docker-bake.cache.hcl -f docker-bake.cache-write.hcl --metadata-file=/tmp/base-release-stable.json
+          fi
 
       - name: save image digests
         if: ${{ github.event_name == 'schedule' || github.event_name == 'push' }}
@@ -202,7 +269,7 @@ jobs:
 
   setup_wizard:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'push' }}
-    runs-on: ${{ (matrix.arch == 'amd64' && vars.AMD64_RUNNER) || vars.ARM64_RUNNER }}
+    runs-on: ${{ matrix.arch == 'amd64' && (vars.AMD64_RUNNER || 'ubuntu-24.04') || (vars.ARM64_RUNNER || 'ubuntu-24.04-arm') }}
     strategy:
       matrix:
         arch: [amd64, arm64]
@@ -211,12 +278,34 @@ jobs:
         working-directory: image
     env:
       ARCH: ${{ matrix.arch }}
+      BORINGCACHE_ENABLED: ${{ vars.BORINGCACHE_ENABLED == 'true' && secrets.BORINGCACHE_RESTORE_TOKEN != '' && secrets.BORINGCACHE_SAVE_TOKEN != '' && 'true' || 'false' }}
     timeout-minutes: 15
     steps:
-      - uses: docker/setup-buildx-action@v3
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      - name: Set up Docker Buildx
+        if: env.BORINGCACHE_ENABLED != 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up BoringCache
+        if: env.BORINGCACHE_ENABLED == 'true'
+        uses: boringcache/one@e24257b122813ad11d53b9ed024b474ca4946ad2 # v1.19.1
+        with:
+          cli-version: v1.19.1
+          trust-policy: auto
+          setup: none
+          mode: docker
+          working-directory: image
+          docker-command: setup
+          diagnostics: summary
+          verify: none
+          fail-on-cache-error: false
+          metadata-hints: workflow=setup-wizard,architecture=${{ matrix.arch }}
+        env:
+          BORINGCACHE_RESTORE_TOKEN: ${{ secrets.BORINGCACHE_RESTORE_TOKEN }}
+          BORINGCACHE_SAVE_TOKEN: ${{ github.event_name != 'pull_request' && secrets.BORINGCACHE_SAVE_TOKEN || '' }}
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -226,7 +315,11 @@ jobs:
 
       - name: build and push to dockerhub
         run: |
-          docker buildx bake setup-wizard -f docker-bake.hcl -f docker-bake.push.hcl --metadata-file=/tmp/setup-wizard.json
+          if [[ "$BORINGCACHE_ENABLED" == "true" ]]; then
+            boringcache docker -- docker buildx bake setup-wizard -f docker-bake.hcl -f docker-bake.push.hcl --metadata-file=/tmp/setup-wizard.json
+          else
+            docker buildx bake setup-wizard -f docker-bake.hcl -f docker-bake.push.hcl --metadata-file=/tmp/setup-wizard.json
+          fi
 
       - name: save image digests
         id: metadata
