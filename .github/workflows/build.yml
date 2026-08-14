@@ -84,6 +84,8 @@ jobs:
           mode: docker
           working-directory: image
           docker-command: setup
+          # Leave the CLI's default 22243 port free for the later Bake wrappers.
+          proxy-port: 22242
           diagnostics: summary
           verify: none
           fail-on-cache-error: false
@@ -302,6 +304,8 @@ jobs:
           mode: docker
           working-directory: image
           docker-command: setup
+          # Leave the CLI's default 22243 port free for the later Bake wrapper.
+          proxy-port: 22242
           diagnostics: summary
           verify: none
           fail-on-cache-error: false
